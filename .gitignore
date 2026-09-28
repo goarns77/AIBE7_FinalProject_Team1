@@ -38,3 +38,7 @@ out/
 
 *.pdf
 *.pem
+.DS_Store
+.env
+/storage/
+/CODERABBIT_REVIEW_FIXES.md
