@@ -1,0 +1,1 @@
+-- Initial schema baseline. Add schema changes in new versioned migrations.

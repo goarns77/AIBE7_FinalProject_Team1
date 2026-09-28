@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: ${TEST_DB_URL:jdbc:postgresql://localhost:5432/aibe7_test}
+    username: ${TEST_DB_USERNAME:aibe7}
+    password: ${TEST_DB_PASSWORD}
+  data:
+    redis:
+      host: ${TEST_REDIS_HOST:localhost}
+      port: ${TEST_REDIS_PORT:6379}
+      password: ${TEST_REDIS_PASSWORD:}
+  jpa:
+    show-sql: false
+
+app:
+  jwt:
+    secret: ${TEST_JWT_SECRET}
+  storage:
+    local-root: ${TEST_STORAGE_ROOT:${java.io.tmpdir}/aibe7-test-storage}
