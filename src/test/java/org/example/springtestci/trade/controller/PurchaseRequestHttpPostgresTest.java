@@ -12,6 +12,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.example.springtestci.chat.domain.ChatListingSnapshot;
+import org.example.springtestci.chat.domain.ChatListingStatus;
+import org.example.springtestci.chat.service.ChatListingReader;
 import org.example.springtestci.trade.service.InternalTransferPendingWriter;
 import org.example.springtestci.trade.service.PublishedListing;
 import org.example.springtestci.trade.service.PublishedListingAccess;
@@ -42,7 +45,7 @@ import org.springframework.test.context.DynamicPropertySource;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
       "app.features.trade-purchase-requests.enabled=true",
-      "app.features.chat-api.enabled=false",
+      "app.features.chat-api.enabled=true",
       "spring.flyway.enabled=false",
       "spring.datasource.driver-class-name=org.postgresql.Driver",
       "spring.jpa.hibernate.ddl-auto=validate"
@@ -99,7 +102,7 @@ class PurchaseRequestHttpPostgresTest {
     jdbcTemplate.execute(
         "truncate table ownership_transfers, purchase_requests, chat_read_positions, chat_messages, chat_rooms, listings, products, users restart identity cascade");
     jdbcTemplate.update(
-        "insert into users (id, email, password_hash, nickname, role, created_at, updated_at) values (1, 'seller@http.test', 'hash', 'seller', 'USER', current_timestamp, current_timestamp), (2, 'buyer@http.test', 'hash', 'buyer', 'USER', current_timestamp, current_timestamp)");
+        "insert into users (id, email, password_hash, nickname, role, created_at, updated_at) values (1, 'seller@http.test', 'hash', 'seller', 'USER', current_timestamp, current_timestamp), (2, 'buyer@http.test', 'hash', 'buyer', 'USER', current_timestamp, current_timestamp), (3, 'other@http.test', 'hash', 'other', 'USER', current_timestamp, current_timestamp)");
     jdbcTemplate.update(
         "insert into products (id, category, manufacturer, model_name, serial_number_fingerprint, title, owner_id, serial_number_ciphertext) values (1, 'LAPTOP', 'maker', 'model', 'http-fingerprint', 'title', 1, 'ciphertext')");
     jdbcTemplate.update(
@@ -110,18 +113,8 @@ class PurchaseRequestHttpPostgresTest {
 
   @Test
   void createsPurchaseRequestThroughRunningHttpServerAndBearerJwt() throws Exception {
-    String token = tokenFor(2L);
-    HttpRequest request =
-        HttpRequest.newBuilder(
-                URI.create(
-                    "http://127.0.0.1:" + port + "/api/v1/market/listings/1/purchase-requests"))
-            .header("Authorization", "Bearer " + token)
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString("{\"roomId\":1}"))
-            .build();
-
     HttpResponse<String> response =
-        HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        post("/api/v1/market/listings/1/purchase-requests", 2L, "{\"roomId\":1}");
 
     assertThat(response.statusCode()).isEqualTo(201);
     assertThat(response.body()).contains("\"requestStatus\":\"PENDING\"");
@@ -130,6 +123,41 @@ class PurchaseRequestHttpPostgresTest {
                 "select count(*) from purchase_requests where room_id = 1 and request_status = 'PENDING'",
                 Long.class))
         .isEqualTo(1L);
+  }
+
+  @Test
+  void reservationBlocksNewChatRoomButKeepsExistingRoomMessaging() throws Exception {
+    HttpResponse<String> create =
+        post("/api/v1/market/listings/1/purchase-requests", 2L, "{\"roomId\":1}");
+    assertThat(create.statusCode()).isEqualTo(201);
+    long requestId =
+        jdbcTemplate.queryForObject(
+            "select id from purchase_requests where room_id = 1", Long.class);
+
+    HttpResponse<String> accept =
+        post("/api/v1/purchase-requests/" + requestId + "/accept", 1L, "");
+    HttpResponse<String> newRoom = post("/api/v1/market/listings/1/chat-rooms", 3L, "");
+    HttpResponse<String> existingMessage =
+        post("/api/v1/chat-rooms/1/messages", 2L, "{\"content\":\"still connected\"}");
+
+    assertThat(accept.statusCode()).isEqualTo(201);
+    assertThat(newRoom.statusCode()).isEqualTo(403);
+    assertThat(existingMessage.statusCode()).isEqualTo(200);
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "select count(*) from chat_messages where room_id = 1 and sender_id = 2",
+                Long.class))
+        .isEqualTo(1L);
+  }
+
+  private HttpResponse<String> post(String path, long userId, String body) throws Exception {
+    HttpRequest request =
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+            .header("Authorization", "Bearer " + tokenFor(userId))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+    return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
   }
 
   private String tokenFor(long userId) {
@@ -191,6 +219,26 @@ class PurchaseRequestHttpPostgresTest {
 
   @TestConfiguration
   static class FixtureConfiguration {
+
+    @Bean
+    @Primary
+    ChatListingReader chatListingReader(JdbcTemplate jdbcTemplate) {
+      return listingId ->
+          jdbcTemplate
+              .query(
+                  "select id, product_id, seller_id, current_owner_id, status from listings where id = ?",
+                  (resultSet, rowNumber) ->
+                      new ChatListingSnapshot(
+                          resultSet.getLong("id"),
+                          resultSet.getLong("seller_id"),
+                          resultSet.getLong("product_id"),
+                          resultSet.getLong("current_owner_id"),
+                          ChatListingStatus.valueOf(resultSet.getString("status")),
+                          "fixture listing"),
+                  listingId)
+              .stream()
+              .findFirst();
+    }
 
     @Bean
     @Primary

@@ -35,10 +35,14 @@
 
 - 수락 시 요청 ACCEPTED/RESERVED, 게시글 RESERVED, INTERNAL/PENDING 이전 1건이 함께 커밋됨
 - 내부 이전 삽입 뒤 강제 예외 시 요청 PENDING, 게시글 ACTIVE로 복원되고 이전 행이 남지 않음
+- 게시글 RESERVED 갱신 뒤 강제 예외 시 요청과 게시글 변경이 모두 롤백됨
+- 동일 방 동시 생성 두 건은 같은 요청 ID를 반환하고 PENDING 한 행만 남음
 - 서로 다른 두 요청의 동시 수락은 성공 1건·충돌 1건이며 예약과 내부 이전이 각각 1건만 남음
+- 같은 요청의 수락·취소 경합은 한 결과만 확정되고 요청·게시글·내부 이전 상태가 일치함
 - 잘못된 상태 조합과 동일 방 중복 PENDING 직접 삽입을 PostgreSQL 제약이 거부함
 - 실제 임의 포트 Spring 서버에 Bearer JWT로 POST 요청 시 201과 PENDING 응답을 받고 DB 커밋을 재조회함
-- 거래 신규 테스트 15건이 실행되어 실패·오류·skipped 없이 통과함
+- 예약 후 같은 게시글의 신규 채팅방은 차단되고 기존 채팅방 메시지 저장은 유지됨
+- 거래 신규 테스트 19건이 실행되어 실패·오류·skipped 없이 통과함
 - `spotlessCheck test build --rerun-tasks --no-build-cache` 전체 검사가 PostgreSQL 전용 테스트를 포함해 성공함
 
 ## 실행 방법

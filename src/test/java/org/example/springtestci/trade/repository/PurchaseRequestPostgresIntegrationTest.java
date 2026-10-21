@@ -109,6 +109,7 @@ class PurchaseRequestPostgresIntegrationTest {
     insertUser(BUYER_ONE_ID, "buyer1@example.test", "buyer1");
     insertUser(BUYER_TWO_ID, "buyer2@example.test", "buyer2");
     transferWriter.failAfterInsert.set(false);
+    listingAccess.failAfterReserve.set(false);
   }
 
   @Test
@@ -156,6 +157,52 @@ class PurchaseRequestPostgresIntegrationTest {
   }
 
   @Test
+  void rollsBackRequestAndListingWhenListingReservationFails() {
+    Fixture fixture = insertFixture(BUYER_ONE_ID);
+    long requestId = createRequest(fixture);
+    listingAccess.failAfterReserve.set(true);
+
+    assertThatThrownBy(
+            () -> transactionTemplate.execute(status -> service.accept(requestId, SELLER_ID)))
+        .isInstanceOf(IllegalStateException.class);
+
+    PurchaseRequest stored = requestRepository.findById(requestId).orElseThrow();
+    assertThat(stored.requestStatus()).isEqualTo(PurchaseRequestStatus.PENDING);
+    assertThat(stored.transactionStatus()).isNull();
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "select status from listings where id = ?", String.class, fixture.listingId()))
+        .isEqualTo("ACTIVE");
+    assertThat(jdbcTemplate.queryForObject("select count(*) from ownership_transfers", Long.class))
+        .isZero();
+  }
+
+  @Test
+  void concurrentCreatesReturnSamePendingRequest() throws Exception {
+    Fixture fixture = insertFixture(BUYER_ONE_ID);
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<Long> first = executor.submit(() -> createConcurrently(fixture, ready, start));
+      Future<Long> second = executor.submit(() -> createConcurrently(fixture, ready, start));
+      assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+
+      assertThat(first.get()).isEqualTo(second.get());
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "select count(*) from purchase_requests where room_id = ? and request_status = 'PENDING'",
+                Long.class,
+                fixture.roomId()))
+        .isEqualTo(1L);
+  }
+
+  @Test
   void allowsOnlyOneConcurrentAcceptanceForSameListing() throws Exception {
     Fixture first = insertFixture(BUYER_ONE_ID);
     long secondRoomId = insertRoom(first.listingId(), BUYER_TWO_ID);
@@ -196,6 +243,43 @@ class PurchaseRequestPostgresIntegrationTest {
   }
 
   @Test
+  void concurrentAcceptAndCancelLeaveOneConsistentResult() throws Exception {
+    Fixture fixture = insertFixture(BUYER_ONE_ID);
+    long requestId = createRequest(fixture);
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<Boolean> accepted = executor.submit(() -> acceptConcurrently(requestId, ready, start));
+      Future<Boolean> cancelled =
+          executor.submit(() -> cancelConcurrently(requestId, ready, start));
+      assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+
+      assertThat(List.of(accepted.get(), cancelled.get())).containsExactlyInAnyOrder(true, false);
+    } finally {
+      executor.shutdownNow();
+    }
+
+    PurchaseRequest stored = requestRepository.findById(requestId).orElseThrow();
+    String listingStatus =
+        jdbcTemplate.queryForObject(
+            "select status from listings where id = ?", String.class, fixture.listingId());
+    Long transferCount =
+        jdbcTemplate.queryForObject("select count(*) from ownership_transfers", Long.class);
+    if (stored.requestStatus() == PurchaseRequestStatus.ACCEPTED) {
+      assertThat(stored.transactionStatus()).isEqualTo(TransactionStatus.RESERVED);
+      assertThat(listingStatus).isEqualTo("RESERVED");
+      assertThat(transferCount).isEqualTo(1L);
+    } else {
+      assertThat(stored.requestStatus()).isEqualTo(PurchaseRequestStatus.CANCELLED);
+      assertThat(stored.transactionStatus()).isNull();
+      assertThat(listingStatus).isEqualTo("ACTIVE");
+      assertThat(transferCount).isZero();
+    }
+  }
+
+  @Test
   void databaseRejectsInvalidStatePairAndDuplicatePendingRoom() {
     Fixture fixture = insertFixture(BUYER_ONE_ID);
     createRequest(fixture);
@@ -226,6 +310,25 @@ class PurchaseRequestPostgresIntegrationTest {
     } catch (CommonException exception) {
       return false;
     }
+  }
+
+  private boolean cancelConcurrently(long requestId, CountDownLatch ready, CountDownLatch start)
+      throws InterruptedException {
+    ready.countDown();
+    start.await(5, TimeUnit.SECONDS);
+    try {
+      transactionTemplate.execute(status -> service.cancel(requestId, BUYER_ONE_ID));
+      return true;
+    } catch (CommonException exception) {
+      return false;
+    }
+  }
+
+  private long createConcurrently(Fixture fixture, CountDownLatch ready, CountDownLatch start)
+      throws InterruptedException {
+    ready.countDown();
+    start.await(5, TimeUnit.SECONDS);
+    return createRequest(fixture);
   }
 
   private long createRequest(Fixture fixture) {
@@ -323,6 +426,7 @@ class PurchaseRequestPostgresIntegrationTest {
   private static class JdbcListingAccess implements PublishedListingAccess {
 
     private final JdbcTemplate jdbcTemplate;
+    private final AtomicBoolean failAfterReserve = new AtomicBoolean();
 
     private JdbcListingAccess(JdbcTemplate jdbcTemplate) {
       this.jdbcTemplate = jdbcTemplate;
@@ -367,6 +471,9 @@ class PurchaseRequestPostgresIntegrationTest {
               listingId);
       if (updated != 1) {
         throw new CommonException(org.example.springtestci.common.error.ErrorCode.TRADE_CONFLICT);
+      }
+      if (failAfterReserve.get()) {
+        throw new IllegalStateException("Injected listing reservation failure");
       }
     }
 
