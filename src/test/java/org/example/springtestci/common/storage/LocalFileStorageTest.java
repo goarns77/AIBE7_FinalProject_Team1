@@ -40,6 +40,23 @@ class LocalFileStorageTest {
   }
 
   @Test
+  void legacyPublicRouteOnlyAllowsCanonicalProductImageKeys() {
+    var storage = newStorage();
+    assertTrue(storage.isPublicImageKey("product-images/101/abc-123.png"));
+    for (String key :
+        java.util.List.of(
+            "documents/101/a.pdf",
+            "product-images/101/../../documents/a.png",
+            "product-images%2F101%2Fa.png",
+            "product-images/101/..%252Fdocuments/a.png",
+            "product-images\\101\\a.png",
+            "/product-images/101/a.png",
+            "product-images/101/a.png\u0000")) {
+      assertFalse(storage.isPublicImageKey(key));
+    }
+  }
+
+  @Test
   void storesLoadsAndDeletesAFile() throws Exception {
     LocalFileStorage storage = newStorage();
 

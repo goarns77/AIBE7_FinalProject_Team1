@@ -175,6 +175,49 @@ public class ProductRepository {
         ownerId);
   }
 
+  public List<ProductResponse> findOwnedPage(long ownerId, int page, int size) {
+    return jdbc.query(
+        PRODUCT_SELECT
+            + " WHERE p.owner_id = ? AND p.archived_at IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT ? OFFSET ?",
+        this::product,
+        ownerId,
+        size,
+        (long) page * size);
+  }
+
+  public long countOwned(long ownerId) {
+    return jdbc.queryForObject(
+        "SELECT COUNT(*) FROM products WHERE owner_id = ? AND archived_at IS NULL",
+        Long.class,
+        ownerId);
+  }
+
+  public java.util.Map<Long, List<ProductImageRecord>> findImagesForProducts(
+      List<Long> productIds) {
+    java.util.Map<Long, List<ProductImageRecord>> result = new java.util.HashMap<>();
+    if (productIds.isEmpty()) return result;
+    String placeholders = String.join(",", java.util.Collections.nCopies(productIds.size(), "?"));
+    jdbc.query(
+        "SELECT product_id, id, storage_key, content_type, byte_size, sort_order, is_primary FROM product_images WHERE deleted_at IS NULL AND product_id IN ("
+            + placeholders
+            + ") ORDER BY product_id, sort_order, id",
+        (org.springframework.jdbc.core.RowCallbackHandler)
+            row ->
+                result
+                    .computeIfAbsent(
+                        row.getLong("product_id"), ignored -> new java.util.ArrayList<>())
+                    .add(
+                        new ProductImageRecord(
+                            row.getLong("id"),
+                            row.getString("storage_key"),
+                            row.getString("content_type"),
+                            row.getLong("byte_size"),
+                            row.getInt("sort_order"),
+                            row.getBoolean("is_primary"))),
+        productIds.toArray());
+    return result;
+  }
+
   public Optional<String> findSerialCiphertextOwned(long productId, long ownerId) {
     return jdbc
         .queryForList(

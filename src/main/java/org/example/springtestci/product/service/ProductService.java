@@ -10,6 +10,7 @@ import org.example.springtestci.common.error.CommonException;
 import org.example.springtestci.common.error.ErrorCode;
 import org.example.springtestci.common.storage.FileStorage;
 import org.example.springtestci.product.dto.CreateProductRequest;
+import org.example.springtestci.product.dto.ProductPageResponse;
 import org.example.springtestci.product.dto.ProductResponse;
 import org.example.springtestci.product.dto.UpdateProductImagesRequest;
 import org.example.springtestci.product.dto.UpdateProductRequest;
@@ -88,7 +89,37 @@ public class ProductService {
 
   /** 소유 제품 목록을 조회하고 각 제품의 이미지 정보를 결합한다. */
   @Transactional(readOnly = true)
-  public List<ProductResponse> listMine(long ownerId) {
+  public ProductPageResponse listMine(long ownerId, int page, int size) {
+    if (page < 0 || size < 1 || size > 100) throw new CommonException(ErrorCode.INVALID_INPUT);
+    long total = productRepository.countOwned(ownerId);
+    var products = productRepository.findOwnedPage(ownerId, page, size);
+    var images =
+        productRepository.findImagesForProducts(
+            products.stream().map(ProductResponse::productId).toList());
+    var items =
+        products.stream()
+            .map(
+                product ->
+                    product.withImages(
+                        images.getOrDefault(product.productId(), List.of()).stream()
+                            .map(
+                                image ->
+                                    new ProductResponse.Image(
+                                        image.imageId(),
+                                        imageUrl(product.productId(), image.imageId()),
+                                        image.primary(),
+                                        image.sortOrder(),
+                                        image.byteSize()))
+                            .toList()))
+            .toList();
+    long pages = (total + size - 1) / size;
+    return new ProductPageResponse(
+        items, new ProductPageResponse.Page(page, size, total, pages, (long) page + 1 < pages));
+  }
+
+  /** 별도 판매 초안 제품 선택 API의 기존 목록 계약을 유지한다. */
+  @Transactional(readOnly = true)
+  public List<ProductResponse> listForDrafts(long ownerId) {
     return productRepository.findAllOwned(ownerId).stream().map(this::withImages).toList();
   }
 

@@ -339,7 +339,7 @@ class DirectTransferPostgresTest {
     switch (state) {
       case "expired" -> testClock.set(transfer.expiresAt());
       case "cancelled" -> direct.cancelTransfer(1, transfer.transferId());
-      case "completed" -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken()));
+      case "completed" -> consentAndApprove(2, transfer.rawToken());
       case "ownerChanged" -> jdbc.update("UPDATE products SET owner_id=3 WHERE id=101");
       case "archived" ->
           jdbc.update("UPDATE products SET archived_at=CURRENT_TIMESTAMP WHERE id=101");
@@ -347,7 +347,7 @@ class DirectTransferPostgresTest {
       default -> {}
     }
     var before = snapshot();
-    var verification = direct.verifyTransfer(transfer.rawToken());
+    var verification = direct.verifyTransfer(2L, transfer.rawToken());
     assertThat(verification.canAccept()).isEqualTo(state.equals("valid"));
     assertThat(verification.isExpired()).isEqualTo(state.equals("expired"));
     if (!state.equals("valid")) {
@@ -359,7 +359,7 @@ class DirectTransferPostgresTest {
 
   @Test
   void p5A03InvalidAndInternalTokensNeverExposeOrMutateInternalTransfer() {
-    error(() -> direct.verifyTransfer("not-a-token"), ErrorCode.OWNERSHIP_NOT_FOUND);
+    error(() -> direct.verifyTransfer(2L, "not-a-token"), ErrorCode.OWNERSHIP_NOT_FOUND);
     jdbc.update("UPDATE listings SET status='ACTIVE',active_slot=1 WHERE id=301");
     purchases.accept(701, 1);
     String token = "synthetic-internal-not-issued";
@@ -368,10 +368,8 @@ class DirectTransferPostgresTest {
         OwnershipTransferService.hashToken(token),
         java.sql.Timestamp.from(testClock.instant().minus(Duration.ofDays(2))));
     var before = snapshot();
-    error(() -> direct.verifyTransfer(token), ErrorCode.OWNERSHIP_NOT_FOUND);
-    error(
-        () -> direct.acceptTransfer(2, new AcceptTransferRequest(token)),
-        ErrorCode.OWNERSHIP_TRANSFER_BLOCKED);
+    error(() -> direct.verifyTransfer(2L, token), ErrorCode.OWNERSHIP_NOT_FOUND);
+    error(() -> consentAndApprove(2, token), ErrorCode.OWNERSHIP_TRANSFER_BLOCKED);
     error(
         () -> direct.cancelTransfer(1, number("SELECT id FROM ownership_transfers")),
         ErrorCode.OWNERSHIP_TRANSFER_BLOCKED);
@@ -389,9 +387,7 @@ class DirectTransferPostgresTest {
     assertThat(text("SELECT status FROM ownership_transfers")).isEqualTo("CANCELLED");
     assertThat(number("SELECT COUNT(*) FROM ownership_transfers WHERE pending_slot IS NOT NULL"))
         .isZero();
-    error(
-        () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())),
-        ErrorCode.OWNERSHIP_EXPIRED);
+    error(() -> consentAndApprove(2, transfer.rawToken()), ErrorCode.OWNERSHIP_EXPIRED);
     assertThat(number("SELECT owner_id FROM products WHERE id=101")).isEqualTo(1);
     assertThat(
             number(
@@ -405,26 +401,22 @@ class DirectTransferPostgresTest {
   void p5A04ExactExpiryBoundaryIsDeterministicAndReissueReleasesOnlyExpiredDirect(long nanos) {
     var first = issue(2L);
     testClock.set(first.expiresAt().plusNanos(nanos));
-    assertThat(direct.verifyTransfer(first.rawToken()).isExpired()).isEqualTo(nanos >= 0);
+    assertThat(direct.verifyTransfer(2L, first.rawToken()).isExpired()).isEqualTo(nanos >= 0);
     var before = snapshot();
     if (nanos < 0) {
       error(() -> issue(null), ErrorCode.OWNERSHIP_ALREADY_PENDING);
       assertThat(snapshot()).isEqualTo(before);
-      direct.acceptTransfer(2, new AcceptTransferRequest(first.rawToken()));
+      consentAndApprove(2, first.rawToken());
       assertCompleted(first.transferId(), 2);
     } else {
-      error(
-          () -> direct.acceptTransfer(2, new AcceptTransferRequest(first.rawToken())),
-          ErrorCode.OWNERSHIP_EXPIRED);
+      error(() -> consentAndApprove(2, first.rawToken()), ErrorCode.OWNERSHIP_EXPIRED);
       assertThat(snapshot()).isEqualTo(before);
       var second = issue(3L);
       assertThat(second.transferId()).isNotEqualTo(first.transferId());
       assertThat(text("SELECT status FROM ownership_transfers WHERE id=" + first.transferId()))
           .isEqualTo("EXPIRED");
-      error(
-          () -> direct.acceptTransfer(2, new AcceptTransferRequest(first.rawToken())),
-          ErrorCode.OWNERSHIP_EXPIRED);
-      direct.acceptTransfer(3, new AcceptTransferRequest(second.rawToken()));
+      error(() -> consentAndApprove(2, first.rawToken()), ErrorCode.OWNERSHIP_EXPIRED);
+      consentAndApprove(3, second.rawToken());
       assertCompleted(second.transferId(), 3);
     }
   }
@@ -433,19 +425,13 @@ class DirectTransferPostgresTest {
   void p5A05SpecifiedRecipientAndSelfRejectionsPreserveRightfulAcceptance() {
     var transfer = issue(2L);
     var before = snapshot();
-    error(
-        () -> direct.acceptTransfer(1, new AcceptTransferRequest(transfer.rawToken())),
-        ErrorCode.OWNERSHIP_SELF_ACCEPT);
-    error(
-        () -> direct.acceptTransfer(3, new AcceptTransferRequest(transfer.rawToken())),
-        ErrorCode.ACCESS_DENIED);
+    error(() -> consentAndApprove(1, transfer.rawToken()), ErrorCode.OWNERSHIP_SELF_ACCEPT);
+    error(() -> consentAndApprove(3, transfer.rawToken()), ErrorCode.ACCESS_DENIED);
     assertThat(snapshot()).isEqualTo(before);
-    direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken()));
+    consentAndApprove(2, transfer.rawToken());
     assertCompleted(transfer.transferId(), 2);
     var completed = snapshot();
-    error(
-        () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())),
-        ErrorCode.OWNERSHIP_EXPIRED);
+    error(() -> consentAndApprove(2, transfer.rawToken()), ErrorCode.OWNERSHIP_EXPIRED);
     assertThat(snapshot()).isEqualTo(completed);
     assertThat(committedEvents.get()).isEqualTo(1);
   }
@@ -463,7 +449,7 @@ class DirectTransferPostgresTest {
     }
     var before = snapshot();
     error(
-        () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())),
+        () -> consentAndApprove(2, transfer.rawToken()),
         state.equals("sale")
             ? ErrorCode.OWNERSHIP_TRANSFER_BLOCKED
             : state.equals("archived")
@@ -501,6 +487,12 @@ class DirectTransferPostgresTest {
         .isEqualTo(401);
     var accepted = http("POST", "/api/v1/ownership/transfers/accept", accept, 2, true, true);
     assertThat(accepted.statusCode()).isEqualTo(200);
+    assertThat(number("SELECT owner_id FROM products WHERE id=101")).isEqualTo(1);
+    direct.approveTransfer(
+        1,
+        transfer.transferId(),
+        new org.example.springtestci.ownership.dto.ApproveTransferRequest(
+            2L, number("SELECT facts_version FROM products WHERE id=101")));
     assertCompleted(transfer.transferId(), 2);
     assertThat(
             http("GET", "/api/v1/ownership/transfers/product/101", null, 1, false, false)
@@ -514,8 +506,8 @@ class DirectTransferPostgresTest {
             0,
             false,
             false);
-    assertThat(verify.statusCode()).isEqualTo(200);
-    assertThat(verify.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+    assertThat(verify.statusCode()).isEqualTo(401);
+
     assertThat(verify.headers().firstValue("Referrer-Policy").orElse("")).isEqualTo("no-referrer");
     assertThat(verify.body())
         .doesNotContain(transfer.rawToken(), "private content", "own-int-document");
@@ -535,7 +527,7 @@ class DirectTransferPostgresTest {
         java.sql.Timestamp.from(testClock.instant().minusSeconds(60)));
     var preserved = preserved();
     var transfer = issue(null);
-    direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken()));
+    consentAndApprove(2, transfer.rawToken());
     assertCompleted(transfer.transferId(), 2);
     assertThat(preserved()).isEqualTo(preserved);
     assertThat(number("SELECT COUNT(*) FROM listing_drafts WHERE id=" + oldDraft)).isZero();
@@ -550,7 +542,7 @@ class DirectTransferPostgresTest {
         .isEqualTo(1);
     assertThat(
             number(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='OWNERSHIP_TRANSFERRED' AND actor_id=2 AND target_id="
+                "SELECT COUNT(*) FROM audit_logs WHERE action='OWNERSHIP_TRANSFERRED' AND actor_id=1 AND target_id="
                     + transfer.transferId()))
         .isEqualTo(1);
     assertThat(
@@ -600,6 +592,7 @@ class DirectTransferPostgresTest {
         .getBean(ListingDraftService.class)
         .save(101, 1, draft("seller private draft", List.of(1001L)));
     var transfer = issue(2L);
+    direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken()));
     var before = snapshot();
     String table = boundary.equals("commit") ? "ownership_transfers" : boundary;
     String event =
@@ -609,13 +602,13 @@ class DirectTransferPostgresTest {
     installFault(table, event, boundary.equals("commit"));
     Throwable failure =
         org.assertj.core.api.Assertions.catchThrowable(
-            () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())));
+            () -> consentAndApprove(2, transfer.rawToken()));
     assertInjectedSqlFailure(failure);
     assertThat(snapshot()).isEqualTo(before);
     assertThat(committedEvents.get()).isZero();
     jdbc.execute("DROP TRIGGER direct_fault ON " + table);
     jdbc.execute("DROP FUNCTION direct_fail()");
-    direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken()));
+    consentAndApprove(2, transfer.rawToken());
     assertCompleted(transfer.transferId(), 2);
     assertThat(committedEvents.get()).isEqualTo(1);
   }
@@ -626,13 +619,11 @@ class DirectTransferPostgresTest {
       throws Exception {
     var transfer = issue(null);
     runBlockedRace(
-        () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())),
+        () -> consentAndApprove(2, transfer.rawToken()),
         () -> {
           switch (competitor) {
             case "secondAccept" ->
-                error(
-                    () -> direct.acceptTransfer(3, new AcceptTransferRequest(transfer.rawToken())),
-                    ErrorCode.OWNERSHIP_EXPIRED);
+                error(() -> consentAndApprove(3, transfer.rawToken()), ErrorCode.OWNERSHIP_EXPIRED);
             case "cancel" ->
                 assertThatThrownBy(() -> direct.cancelTransfer(1, transfer.transferId()))
                     .isInstanceOfSatisfying(
@@ -674,10 +665,7 @@ class DirectTransferPostgresTest {
     var transfer = issue(null);
     runBlockedRace(
         () -> direct.cancelTransfer(1, transfer.transferId()),
-        () ->
-            error(
-                () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())),
-                ErrorCode.OWNERSHIP_EXPIRED));
+        () -> error(() -> consentAndApprove(2, transfer.rawToken()), ErrorCode.OWNERSHIP_EXPIRED));
     assertThat(text("SELECT status FROM ownership_transfers")).isEqualTo("CANCELLED");
     assertThat(number("SELECT owner_id FROM products WHERE id=101")).isEqualTo(1);
     assertThat(number("SELECT COUNT(*) FROM product_events WHERE event_type='TRANSFER'")).isZero();
@@ -692,7 +680,7 @@ class DirectTransferPostgresTest {
             context
                 .getBean(ListingDraftService.class)
                 .save(101, 1, draft("seller raced draft", List.of(1001L))),
-        () -> direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken())));
+        () -> consentAndApprove(2, transfer.rawToken()));
     assertCompleted(transfer.transferId(), 2);
     assertThat(number("SELECT COUNT(*) FROM listing_drafts WHERE product_id=101")).isZero();
     assertThat(number("SELECT COUNT(*) FROM product_images WHERE id=1001")).isEqualTo(1);
@@ -704,10 +692,7 @@ class DirectTransferPostgresTest {
     testClock.set(expired.expiresAt());
     runBlockedRace(
         () -> issue(3L),
-        () ->
-            error(
-                () -> direct.acceptTransfer(2, new AcceptTransferRequest(expired.rawToken())),
-                ErrorCode.OWNERSHIP_EXPIRED));
+        () -> error(() -> consentAndApprove(2, expired.rawToken()), ErrorCode.OWNERSHIP_EXPIRED));
     assertThat(text("SELECT status FROM ownership_transfers WHERE id=" + expired.transferId()))
         .isEqualTo("EXPIRED");
     assertThat(
@@ -900,7 +885,7 @@ class DirectTransferPostgresTest {
     jdbc.update("UPDATE product_events SET visibility='PUBLIC' WHERE id=801");
     jdbc.update("UPDATE documents SET redaction_required_at=CURRENT_TIMESTAMP WHERE id=901");
     var transfer = issue(null);
-    direct.acceptTransfer(2, new AcceptTransferRequest(transfer.rawToken()));
+    consentAndApprove(2, transfer.rawToken());
     assertThat(http("GET", "/api/v1/products/101/documents", null, 2, false, false).statusCode())
         .isEqualTo(200);
     assertThat(http("GET", "/api/v1/documents/901/file-url", null, 2, false, false).statusCode())
@@ -914,6 +899,19 @@ class DirectTransferPostgresTest {
         .isEqualTo(200);
     assertThat(text("SELECT visibility FROM product_events WHERE id=801")).isEqualTo("PRIVATE");
     assertThat(number("SELECT uploader_id FROM documents WHERE id=901")).isEqualTo(1);
+  }
+
+  private void consentAndApprove(long recipientId, String token) {
+    var consent = direct.acceptTransfer(recipientId, new AcceptTransferRequest(token));
+    long ownerId =
+        number("SELECT from_user_id FROM ownership_transfers WHERE id=" + consent.transferId());
+    long factsVersion =
+        number("SELECT facts_version FROM products WHERE id=" + consent.productId());
+    direct.approveTransfer(
+        ownerId,
+        consent.transferId(),
+        new org.example.springtestci.ownership.dto.ApproveTransferRequest(
+            recipientId, factsVersion));
   }
 
   private static void await(CountDownLatch latch) {

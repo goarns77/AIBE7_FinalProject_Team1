@@ -76,6 +76,13 @@ public class DocumentExtractionReviewService {
 
   /** 다른 사람의 문서가 존재하는지 알려 주지 않기 위해 소유자가 아니면 404로 응답한다. */
   private Document findOwnedDocument(Long documentId, Long userId) {
+    Long productId =
+        documentRepository
+            .findProductIdById(documentId)
+            .orElseThrow(() -> new CommonException(ErrorCode.RESOURCE_NOT_FOUND));
+    if (!productOwnerReader.lockOwnerId(productId).filter(userId::equals).isPresent()) {
+      throw new CommonException(ErrorCode.RESOURCE_NOT_FOUND);
+    }
     Document document =
         documentRepository
             .findByIdForUpdate(documentId)

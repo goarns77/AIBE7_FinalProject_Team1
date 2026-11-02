@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 로컬·테스트 환경에서 S3 Presigned URL을 흉내 내는 임시 URL 다운로드 엔드포인트. 서명이 인증을 대신한다. */
+/** 로컬·테스트의 공개 제품 사진만 서명 URL로 제공한다. 문서는 인증된 문서 다운로드 API에서 제공한다. */
 @RestController
 @Profile({"local", "test"})
 @RequiredArgsConstructor
@@ -22,7 +22,7 @@ public class LocalFileController {
   ResponseEntity<Resource> download(
       @RequestParam String key, @RequestParam long expires, @RequestParam String sig)
       throws IOException {
-    if (!storage.isValidTemporaryUrl(key, expires, sig)) {
+    if (!storage.isPublicImageKey(key) || !storage.isValidTemporaryUrl(key, expires, sig)) {
       return ResponseEntity.status(403).build();
     }
     Resource resource = storage.load(key);

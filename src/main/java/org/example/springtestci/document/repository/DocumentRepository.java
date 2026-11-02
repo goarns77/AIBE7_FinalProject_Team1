@@ -15,6 +15,9 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
 
   long countByProductId(Long productId);
 
+  @Query("select d.productId from Document d where d.id = :id")
+  Optional<Long> findProductIdById(@Param("id") Long id);
+
   /** 같은 문서에 대한 추출 요청이 동시에 들어와도 하나만 만들어지도록 문서 행을 잠근다. */
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("select d from Document d where d.id = :id")

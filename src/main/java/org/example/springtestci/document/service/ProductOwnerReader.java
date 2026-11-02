@@ -6,4 +6,6 @@ import java.util.Optional;
 public interface ProductOwnerReader {
 
   Optional<Long> findOwnerId(Long productId);
+
+  Optional<Long> lockOwnerId(Long productId);
 }

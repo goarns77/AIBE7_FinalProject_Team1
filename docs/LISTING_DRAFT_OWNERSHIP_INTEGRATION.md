@@ -4,7 +4,7 @@
 
 ## 동작
 
-1. 기존 `OwnershipTransferService.acceptTransfer`가 제품 → 이전 요청 순서로 잠그고 수신자·만료·현재 소유자를 검사한다.
+1. `OwnershipTransferService.acceptTransfer`는 수신자 동의만 저장한다. `approveTransfer`가 제품 → 판매글 → 이전 요청 순서로 잠그고 수신자·만료·현재 소유자·확인한 제품 버전을 검사한다.
 2. 소유자와 이전 상태를 바꾼 뒤 `OwnershipTransferred(productId, previousOwnerId, newOwnerId)`를 같은 트랜잭션에서 발행한다.
 3. `ListingDraftService.ownershipTransferred`가 새 소유권을 다시 확인하고 해당 제품의 이전 작성자 초안을 JPA로 삭제·flush한다. 초안의 `draft_images` 선택 관계만 함께 삭제하며 제품·제품 사진·다른 제품의 초안은 유지한다.
 4. 감사 기록까지 성공해야 함께 커밋한다. 초안 삭제나 이후 감사 저장이 실패하면 소유자·이전 상태·초안·사진 선택도 모두 되돌린다.
@@ -15,7 +15,7 @@
 
 ## 연결 범위
 
-- 현재 운영 코드에 있는 토큰 기반 이전 수락 경로에 연결했다. 새 HTTP API·화면·마이그레이션·외부 의존성은 추가하지 않는다.
+- 외부 이전 최종 승인과 내부 거래 완료에서 초안 정리를 실행한다. 외부 수신자 동의만으로는 초안을 삭제하지 않는다. 2026-11-02 승인 API·화면·migration 변경은 [보강 API 계약](development/tx-own-remediation-api.md)을 따른다.
 - 거래 P4의 정식 `InternalTradeOwnershipService`도 소유자 변경 후 같은 트랜잭션에서 이 이벤트를 발행하도록 후속 연결했다. [내부 거래 완료 연결](INTERNAL_TRADE_OWNERSHIP_INTEGRATION.md)의 적용 조건과 검증 범위를 따른다.
 - 과거에 이미 완료된 이전의 고아 초안에 대한 일괄 삭제는 실행하지 않는다. 기존 개발 DB와 시연 데이터도 이 작업을 위해 수정하지 않는다.
 
@@ -23,7 +23,7 @@
 
 `ListingDraftOwnershipHttpTest`는 실제 Spring HTTP·JWT·CSRF·정식 Flyway·JPA·JDBC를 사용한다. Redis의 반복 요청 제한만 시험 대역이며, 삭제 실패는 시험 전용 FK로, 삭제 후 실패는 실제 감사 INSERT 뒤 예외로 주입한다. 경합 시험은 이전이 제품 잠금을 유지한 상태에서 상대 요청의 잠금 진입을 확인한다.
 
-- 정상 수락, 초안 없음, 다른 제품 초안·제품 사진 보존, 새 소유자의 새 작성
+- 수신자 동의 후 소유자 승인, 초안 없음, 다른 제품 초안·제품 사진 보존, 새 소유자의 새 작성
 - 이전 소유자의 오래된 조회·저장·삭제·미리보기 차단과 새 소유자의 과거 ID·버전 거부
 - 요청 생성·취소·만료·수신자 오류·본인 수락에서 초안 보존
 - 초안 삭제 실패와 이후 감사 실패의 전체 롤백 및 재시도

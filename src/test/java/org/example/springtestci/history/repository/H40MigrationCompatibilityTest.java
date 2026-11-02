@@ -145,10 +145,10 @@ class H40MigrationCompatibilityTest {
     var beforeProduct = jdbc.queryForMap("SELECT * FROM products WHERE id=1");
     var beforeColumns =
         jdbc.queryForList(
-            "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY ordinal_position");
+            "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND column_name <> 'recipient_accepted_at' ORDER BY ordinal_position");
     var beforeConstraints =
         jdbc.queryForList(
-            "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY constraint_name");
+            "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND constraint_name <> 'ck_transfer_recipient_consent' ORDER BY constraint_name");
     Flyway current = candidate("classpath:db/migration");
 
     Flyway.configure()
@@ -161,6 +161,11 @@ class H40MigrationCompatibilityTest {
         .validate();
     current.migrate();
     current.validate();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND column_name='recipient_accepted_at'",
+                Integer.class))
+        .isEqualTo(1);
     assertThat(current.migrate().migrationsExecuted).isZero();
 
     assertThat(history().subList(0, beforeHistory.size())).isEqualTo(beforeHistory);
@@ -170,16 +175,18 @@ class H40MigrationCompatibilityTest {
                 Integer.class,
                 CURRENT_OWNERSHIP))
         .isEqualTo(1);
-    assertThat(jdbc.queryForList("SELECT * FROM ownership_transfers ORDER BY id"))
-        .isEqualTo(beforeRows);
+    var upgradedRows = jdbc.queryForList("SELECT * FROM ownership_transfers ORDER BY id");
+    assertThat(upgradedRows)
+        .allSatisfy(row -> assertThat(row.remove("recipient_accepted_at")).isNull());
+    assertThat(upgradedRows).isEqualTo(beforeRows);
     assertThat(jdbc.queryForMap("SELECT * FROM products WHERE id=1")).isEqualTo(beforeProduct);
     assertThat(
             jdbc.queryForList(
-                "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY ordinal_position"))
+                "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND column_name <> 'recipient_accepted_at' ORDER BY ordinal_position"))
         .isEqualTo(beforeColumns);
     assertThat(
             jdbc.queryForList(
-                "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY constraint_name"))
+                "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND constraint_name <> 'ck_transfer_recipient_consent' ORDER BY constraint_name"))
         .isEqualTo(beforeConstraints);
     assertThatThrownBy(
             () ->
@@ -234,10 +241,10 @@ class H40MigrationCompatibilityTest {
     var beforeProduct = jdbc.queryForMap("SELECT * FROM products WHERE id=1");
     var beforeColumns =
         jdbc.queryForList(
-            "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY ordinal_position");
+            "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND column_name <> 'recipient_accepted_at' ORDER BY ordinal_position");
     var beforeConstraints =
         jdbc.queryForList(
-            "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY constraint_name");
+            "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND constraint_name <> 'ck_transfer_recipient_consent' ORDER BY constraint_name");
     var current = candidate("classpath:db/migration");
     assertThatThrownBy(current::validate).isInstanceOf(FlywayValidateException.class);
     assertThatThrownBy(current::migrate).isInstanceOf(FlywayValidateException.class);
@@ -247,11 +254,11 @@ class H40MigrationCompatibilityTest {
     assertThat(jdbc.queryForMap("SELECT * FROM products WHERE id=1")).isEqualTo(beforeProduct);
     assertThat(
             jdbc.queryForList(
-                "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY ordinal_position"))
+                "SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND column_name <> 'recipient_accepted_at' ORDER BY ordinal_position"))
         .isEqualTo(beforeColumns);
     assertThat(
             jdbc.queryForList(
-                "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' ORDER BY constraint_name"))
+                "SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=current_schema() AND table_name='ownership_transfers' AND constraint_name <> 'ck_transfer_recipient_consent' ORDER BY constraint_name"))
         .isEqualTo(beforeConstraints);
   }
 

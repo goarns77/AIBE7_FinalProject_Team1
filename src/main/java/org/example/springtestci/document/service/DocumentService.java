@@ -42,6 +42,7 @@ public class DocumentService {
   private final DocumentFileValidator fileValidator;
   private final ProductOwnerReader productOwnerReader;
   private final Clock clock;
+  private final DocumentUrlSigner urlSigner;
 
   /** 현재 소유자가 마스킹을 확인한 사본을 올린다. 업로드 파일명은 확장자 판별에만 쓰고 저장하지 않는다. */
   @Transactional
@@ -89,7 +90,7 @@ public class DocumentService {
     if (!maskingConfirmed) {
       throw new CommonException(ErrorCode.MASKING_NOT_CONFIRMED);
     }
-    // 같은 문서를 동시에 교체하거나 추출하지 못하도록 행을 잠근다.
+    lockDocumentProduct(documentId, userId);
     Document document =
         documentRepository
             .findByIdForUpdate(documentId)
@@ -141,8 +142,54 @@ public class DocumentService {
     }
     Instant expiresAt = clock.instant().plus(FILE_URL_TTL);
     return new FileUrlResponse(
-        storage().createTemporaryUrl(document.getObjectKey(), expiresAt), expiresAt);
+        "/api/v1/documents/"
+            + documentId
+            + "/file?version="
+            + document.getVersion()
+            + "&expires="
+            + expiresAt.getEpochSecond()
+            + "&sig="
+            + urlSigner.sign(documentId, userId, document.getVersion(), expiresAt.getEpochSecond()),
+        expiresAt);
   }
+
+  /** 제품→문서 잠금 안에서 현재 권한·사본을 검사하고 파일을 확보한 뒤 HTTP 전송 전 잠금을 해제한다. */
+  @Transactional
+  public DocumentContent download(
+      Long documentId, Long userId, int version, long expires, String signature) {
+    if (clock.instant().getEpochSecond() >= expires
+        || !urlSigner.valid(documentId, userId, version, expires, signature)) {
+      throw new CommonException(ErrorCode.ACCESS_DENIED);
+    }
+    lockDocumentProduct(documentId, userId);
+    Document document =
+        documentRepository
+            .findByIdForUpdate(documentId)
+            .orElseThrow(() -> new CommonException(ErrorCode.RESOURCE_NOT_FOUND));
+    if (document.getVersion() != version) throw new CommonException(ErrorCode.ACCESS_DENIED);
+    if (document.isRedactionRequired() || document.getMaskConfirmedAt() == null) {
+      throw new CommonException(ErrorCode.DOCUMENT_REDACTION_REQUIRED);
+    }
+    try {
+      return new DocumentContent(
+          storage().load(document.getObjectKey()).getContentAsByteArray(),
+          document.getContentType());
+    } catch (IOException exception) {
+      throw new CommonException(ErrorCode.RESOURCE_NOT_FOUND);
+    }
+  }
+
+  private void lockDocumentProduct(Long documentId, Long userId) {
+    Long productId =
+        documentRepository
+            .findProductIdById(documentId)
+            .orElseThrow(() -> new CommonException(ErrorCode.RESOURCE_NOT_FOUND));
+    if (!productOwnerReader.lockOwnerId(productId).filter(userId::equals).isPresent()) {
+      throw new CommonException(ErrorCode.RESOURCE_NOT_FOUND);
+    }
+  }
+
+  public record DocumentContent(byte[] bytes, String contentType) {}
 
   /**
    * 현재 소유자가 본인이 올렸고 이력에 연결된 적이 없는(보호되지 않은) 사본만 삭제한다. 이전받은 사본과 이력에 연결된 사본은 삭제할 수 없다. 문서에 딸린 AI 추출
@@ -150,6 +197,7 @@ public class DocumentService {
    */
   @Transactional
   public void delete(Long documentId, Long userId) {
+    lockDocumentProduct(documentId, userId);
     Document document = findDocumentOfCurrentOwner(documentId, userId);
     if (!document.isUploadedBy(userId) || document.isProtected()) {
       throw new CommonException(ErrorCode.DOCUMENT_DELETE_NOT_ALLOWED);

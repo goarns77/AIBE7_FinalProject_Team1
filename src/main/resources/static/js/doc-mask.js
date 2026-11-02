@@ -20,6 +20,8 @@
   let autoRunning = false;
   // cleanup()마다 올라가서, 그 전에 시작한 이미지 열기·미리보기가 늦게 끝나도 결과를 버릴 수 있게 한다.
   let generation = 0;
+  let productPage = 0;
+  let productListVersion = 0;
 
   const find = (selector) => root.querySelector(selector);
   const all = (selector) => Array.from(root.querySelectorAll(selector));
@@ -476,7 +478,9 @@
   }
 
   // 내 제품 목록을 드롭다운에 채운다. wanted(제품 번호)가 목록에 있으면 선택해 둔다.
-  async function loadProducts(wanted) {
+  async function loadProducts(wanted, page = 0) {
+    productPage = page;
+    const listVersion = ++productListVersion;
     const select = find('[data-dm-product]');
     const keep = wanted || select.value;
     const setOptions = (placeholder, products = []) => {
@@ -488,19 +492,33 @@
     };
     setOptions('제품을 불러오는 중이에요');
     try {
-      const response = await api('/api/v1/products');
+      const response = await api(`/api/v1/products?page=${page}&size=20`);
       if (response.status === 401) {
         setOptions('로그인 후 제품을 선택할 수 있어요');
         return;
       }
       if (!response.ok) throw new Error('products');
-      const products = (await response.json()).data || [];
+      const result = (await response.json()).data;
+      if (listVersion !== productListVersion) return;
+      const products = result?.items || [];
       if (products.length === 0) {
         setOptions('등록된 제품이 없어요. 제품을 먼저 등록해 주세요');
         return;
       }
       setOptions('증빙을 연결할 제품을 선택해 주세요', products);
-      if (keep && products.some((product) => String(product.productId) === String(keep))) select.value = String(keep);
+      if (keep && !products.some(product => String(product.productId) === String(keep))) {
+        const selected = await api(`/api/v1/products/${encodeURIComponent(keep)}`);
+        if (listVersion !== productListVersion) return;
+        if (selected.ok) { const product = (await selected.json()).data; select.add(new Option(`#${product.productId} ${product.title}`, String(product.productId))); }
+      }
+      root.querySelector('[data-dm-product-paging]')?.remove();
+      const paging = document.createElement('div'); paging.dataset.dmProductPaging = '';
+      [-1, 1].forEach(step => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = step < 0 ? '이전 제품' : '다음 제품';
+        button.disabled = step < 0 ? page === 0 : !result?.page?.hasNext;
+        button.addEventListener('click', () => loadProducts(null, productPage + step)); paging.append(button);
+      }); select.after(paging);
+      if (keep) select.value = String(keep);
     } catch (error) {
       setOptions('제품 목록을 불러오지 못했어요. 화면을 다시 열어 주세요');
     }
@@ -521,7 +539,7 @@
 
   // 다른 화면으로 이동하면 선택한 원본과 만든 사본의 메모리 참조를 정리한다.
   document.addEventListener('pastport:page-shown', (event) => {
-    if (root && event.detail.id !== 'docmask') reset();
+    if (root && event.detail.id !== 'docmask') { productListVersion++; reset(); }
     // 다른 화면에서 제품을 등록하거나 로그인했을 수 있으니 돌아올 때마다 목록을 새로 받는다.
     if (root && event.detail.id === 'docmask') {
       // 제품 여권의 버튼으로 들어왔을 때만 저장 후 그 제품 여권으로 돌아가는 버튼을 보여 준다.
@@ -531,6 +549,7 @@
     }
   });
   window.addEventListener('pagehide', reset);
+  document.addEventListener('pastport:auth-changed', () => { productListVersion++; if (root) { reset(); find('[data-dm-product]').replaceChildren(new Option('로그인 후 제품을 다시 선택해 주세요', '')); } });
 
   window.PastportDocMask = {
     setProduct(id) {

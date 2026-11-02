@@ -554,15 +554,17 @@
 
 - id (필수, PK): 소유권 이전 요청을 구분하는 고유번호.
 - product\_id (필수, FK → products.id): 이전할 제품 번호.
-- transfer\_type (필수): 내부 거래 INTERNAL 또는 외부 이전 EXTERNAL.
+- transfer\_type (필수): 내부 거래 INTERNAL 또는 외부 이전 DIRECT(기존 문서 EXTERNAL과 같은 의미).
 - purchase\_request\_id (조건부, FK → purchase\_requests.id, UQ): 내부 이전의 원인이 된 수락된 구매 요청 번호.
 - from\_user\_id (필수, FK → users.id): 이전 요청을 발급한 당시 소유자의 회원 번호.
 - to\_user\_id (조건부, FK → users.id): 내부 거래의 선택 구매자 또는 외부 이전의 확인된 수신자.
-- status (필수): 대기 PENDING, 완료 ACCEPTED, 취소 CANCELLED, 외부 만료 EXPIRED.
+- status (필수): 대기 PENDING, 완료 COMPLETED, 취소 CANCELLED, 외부 만료 EXPIRED. 수신자 수락 후 최종 승인 대기도 PENDING을 유지한다.
 - token\_hash (조건부, UQ): 외부 링크·QR에 사용하는 일회성 토큰의 해시값.
-- recipient\_approved\_at (조건부): 외부 수신자가 이전을 수락한 시각.
-- owner\_approved\_at (조건부): 소유자가 확인된 외부 수신자에게 이전을 승인한 시각.
-- created\_at (필수): 이전 요청을 생성한 시각. 외부 요청의 만료를 계산하는 기준이다.
+- recipient\_accepted\_at (조건부): 외부 수신자가 이전을 수락한 시각. 기존 설계의 recipient_approved_at에 해당한다.
+- completed\_at (조건부): 최종 완료 시각. DIRECT에서는 현재 소유자의 최종 승인 시각도 이 값으로 표현한다. INTERNAL에는 별도 외부 승인 절차를 적용하지 않는다.
+- expires\_at (필수): 외부 발급 시점에서 24시간 후. 동의 후에도 연장하지 않는다.
+- pending\_slot: PENDING일 때 1, 나머지는 null. 제품별 유효 요청 한 개를 유일 제약으로 보장한다.
+- created\_at (필수): 이전 요청을 생성한 시각.
 
 **설계 이유**
 

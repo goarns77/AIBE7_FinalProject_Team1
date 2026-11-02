@@ -248,6 +248,23 @@ class ProductServiceTest {
     when(productRepository.findImages(PRODUCT)).thenReturn(List.of());
   }
 
+  @Test
+  void productPagesBoundRequestsAndBatchImages() {
+    when(productRepository.countOwned(OWNER)).thenReturn(21L);
+    when(productRepository.findOwnedPage(OWNER, 1, 20)).thenReturn(List.of(product()));
+    when(productRepository.findImagesForProducts(List.of(PRODUCT)))
+        .thenReturn(java.util.Map.of(PRODUCT, List.of(image(1L, true))));
+    var result = service.listMine(OWNER, 1, 20);
+    assertEquals(21L, result.page().totalElements());
+    assertEquals(2L, result.page().totalPages());
+    assertEquals(false, result.page().hasNext());
+    assertEquals(1, result.items().get(0).images().size());
+    verify(productRepository, never()).findImages(anyLong());
+    assertCode(ErrorCode.INVALID_INPUT, () -> service.listMine(OWNER, -1, 20));
+    assertCode(ErrorCode.INVALID_INPUT, () -> service.listMine(OWNER, 0, 101));
+    assertCode(ErrorCode.INVALID_INPUT, () -> service.listMine(OWNER, 0, 0));
+  }
+
   private static CreateProductRequest request(String serialNumber) {
     return new CreateProductRequest(
         "MacBook Pro 14",

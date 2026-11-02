@@ -8,9 +8,12 @@ import org.example.springtestci.common.response.ApiResponse;
 import org.example.springtestci.common.security.CurrentUserIdResolver;
 import org.example.springtestci.ownership.dto.AcceptTransferRequest;
 import org.example.springtestci.ownership.dto.AcceptTransferResponse;
+import org.example.springtestci.ownership.dto.ApproveTransferRequest;
+import org.example.springtestci.ownership.dto.ApproveTransferResponse;
 import org.example.springtestci.ownership.dto.CreateTransferRequest;
 import org.example.springtestci.ownership.dto.CreateTransferResponse;
 import org.example.springtestci.ownership.dto.OwnerTransferResponse;
+import org.example.springtestci.ownership.dto.TransferStatusResponse;
 import org.example.springtestci.ownership.dto.VerifyTransferResponse;
 import org.example.springtestci.ownership.service.OwnershipTransferService;
 import org.springframework.http.CacheControl;
@@ -52,8 +55,10 @@ public class OwnershipTransferController {
 
   @GetMapping("/verify")
   public ResponseEntity<ApiResponse<VerifyTransferResponse>> verifyTransfer(
+      Authentication authentication,
       @RequestParam("token") @NotBlank @Size(max = 256) String token) {
-    VerifyTransferResponse response = service.verifyTransfer(token);
+    VerifyTransferResponse response =
+        service.verifyTransfer(currentUserIdResolver.resolveAuthentication(authentication), token);
     return ResponseEntity.ok()
         .cacheControl(CacheControl.noStore())
         .body(ApiResponse.success(response));
@@ -75,6 +80,32 @@ public class OwnershipTransferController {
     long actorId = currentUserIdResolver.resolveAuthentication(authentication);
     service.cancelTransfer(actorId, transferId);
     return ResponseEntity.ok(ApiResponse.success(null));
+  }
+
+  @PostMapping("/{id}/approve")
+  public ResponseEntity<ApiResponse<ApproveTransferResponse>> approveTransfer(
+      Authentication authentication,
+      @PathVariable("id") @Positive long transferId,
+      @Valid @RequestBody ApproveTransferRequest request) {
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .body(
+            ApiResponse.success(
+                service.approveTransfer(
+                    currentUserIdResolver.resolveAuthentication(authentication),
+                    transferId,
+                    request)));
+  }
+
+  @GetMapping("/{id}")
+  public ResponseEntity<ApiResponse<TransferStatusResponse>> transferStatus(
+      Authentication authentication, @PathVariable("id") @Positive long transferId) {
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .body(
+            ApiResponse.success(
+                service.transferStatus(
+                    currentUserIdResolver.resolveAuthentication(authentication), transferId)));
   }
 
   @GetMapping("/product/{productId}")

@@ -1,6 +1,6 @@
 // 문서 보관함: 내 제품 목록과 제품별 업로드 문서를 실제 API로 보여 준다.
 (() => {
-  const state = { products: [], selected: null, token: 0 };
+  const state = { products: [], selected: null, token: 0, page: 0, pageInfo: null, listVersion: 0 };
   const root = () => document.querySelector('#documents');
   const find = selector => root()?.querySelector(selector);
   const create = (tag, text, className = '') => {
@@ -31,6 +31,11 @@
       button.type = 'button';
       button.addEventListener('click', () => { state.selected = product.productId; products(); loadDocuments(); });
       box.append(button);
+    });
+    [-1, 1].forEach(step => {
+      const button = create('button', step < 0 ? '이전 제품' : '다음 제품'); button.type = 'button';
+      button.disabled = step < 0 ? state.page === 0 : !state.pageInfo?.hasNext;
+      button.addEventListener('click', () => { state.page += step; open(); }); box.append(button);
     });
   }
   function row(item) {
@@ -71,12 +76,18 @@
   async function open() {
     if (!root() || !find('[data-docs-products]')) return;
     status('문서를 불러오는 중이에요…');
+    const listVersion = ++state.listVersion;
     try {
-      state.products = await api('/api/v1/products') || [];
+      const result = await api(`/api/v1/products?page=${state.page}&size=20`);
+      if (listVersion !== state.listVersion) return;
+      state.products = result?.items || []; state.pageInfo = result?.page;
+      if (!state.products.length && state.page > 0) { state.page--; return open(); }
       if (!state.products.some(item => item.productId === state.selected)) state.selected = state.products[0]?.productId ?? null;
       products(); await loadDocuments();
     } catch (error) { status(error.message, true); }
   }
   document.addEventListener('pastport:page-loaded', event => { if (event.detail.id === 'documents' && root().classList.contains('active')) open(); });
   document.addEventListener('pastport:page-shown', event => { if (event.detail.id === 'documents') open(); });
+  document.addEventListener('pastport:auth-changed', () => { state.listVersion++; state.token++; state.products = []; state.selected = null; state.page = 0; find('[data-docs-products]')?.replaceChildren(); find('[data-docs-list]')?.replaceChildren(); if (root()?.classList.contains('active')) open(); });
+  document.addEventListener('pastport:logout', () => { state.listVersion++; state.token++; state.products = []; state.selected = null; state.page = 0; find('[data-docs-products]')?.replaceChildren(); find('[data-docs-list]')?.replaceChildren(); });
 })();

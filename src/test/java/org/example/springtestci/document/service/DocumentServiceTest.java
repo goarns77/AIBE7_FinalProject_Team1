@@ -63,11 +63,65 @@ class DocumentServiceTest {
             storageProvider,
             new DocumentFileValidator(),
             productOwnerReader,
-            Clock.fixed(NOW, ZoneOffset.UTC));
+            Clock.fixed(NOW, ZoneOffset.UTC),
+            new DocumentUrlSigner("test-document-secret"));
   }
 
   private Document document(Long uploader) {
     return Document.register(PRODUCT, uploader, "documents/100/k.pdf", "application/pdf", 10, NOW);
+  }
+
+  @Test
+  void downloadRechecksOwnerVersionSignatureExpiryAndRedaction() throws IOException {
+    var signer = new DocumentUrlSigner("test-document-secret");
+    long expires = NOW.plusSeconds(300).getEpochSecond();
+    String signature = signer.sign(5L, OWNER, 1, expires);
+    ownerIs(OWNER);
+    Document document = document(OWNER);
+    when(documentRepository.findByIdForUpdate(5L)).thenReturn(Optional.of(document));
+    when(fileStorage.load("documents/100/k.pdf"))
+        .thenReturn(new org.springframework.core.io.ByteArrayResource(PDF));
+    assertEquals(
+        "application/pdf", service.download(5L, OWNER, 1, expires, signature).contentType());
+    assertEquals(
+        ErrorCode.ACCESS_DENIED, errorOf(() -> service.download(5L, OTHER, 1, expires, signature)));
+    assertEquals(
+        ErrorCode.ACCESS_DENIED,
+        errorOf(() -> service.download(5L, OWNER, 1, NOW.getEpochSecond(), signature)));
+    when(productOwnerReader.lockOwnerId(PRODUCT)).thenReturn(Optional.of(OTHER));
+    assertEquals(
+        ErrorCode.RESOURCE_NOT_FOUND,
+        errorOf(() -> service.download(5L, OWNER, 1, expires, signature)));
+    when(productOwnerReader.lockOwnerId(PRODUCT)).thenReturn(Optional.of(OWNER));
+    document.requireRedaction(NOW);
+    assertEquals(
+        ErrorCode.DOCUMENT_REDACTION_REQUIRED,
+        errorOf(() -> service.download(5L, OWNER, 1, expires, signature)));
+    document.replaceFile("documents/100/new.pdf", "application/pdf", PDF.length, NOW);
+    assertEquals(
+        ErrorCode.ACCESS_DENIED, errorOf(() -> service.download(5L, OWNER, 1, expires, signature)));
+    verify(fileStorage).load("documents/100/k.pdf");
+  }
+
+  @Test
+  void oldFileDeletionFailureDoesNotRestoreOldDownloadVersionOrProtection() throws IOException {
+    Document document = document(OWNER);
+    document.protect(NOW);
+    ownerIs(OWNER);
+    when(documentRepository.findByIdForUpdate(5L)).thenReturn(Optional.of(document));
+    when(fileStorage.store(eq("documents/100"), eq("pdf"), any(InputStream.class)))
+        .thenReturn("documents/100/new.pdf");
+    org.mockito.Mockito.doThrow(new IOException("cleanup failed"))
+        .when(fileStorage)
+        .delete("documents/100/k.pdf");
+    replace(OWNER, true);
+    assertTrue(document.isProtected());
+    long expires = NOW.plusSeconds(300).getEpochSecond();
+    String oldSignature = new DocumentUrlSigner("test-document-secret").sign(5L, OWNER, 1, expires);
+    assertEquals(
+        ErrorCode.ACCESS_DENIED,
+        errorOf(() -> service.download(5L, OWNER, 1, expires, oldSignature)));
+    verify(fileStorage, never()).load(anyString());
   }
 
   private ErrorCode errorOf(Runnable action) {
@@ -79,7 +133,15 @@ class DocumentServiceTest {
   }
 
   private void ownerIs(Long ownerId) {
-    when(productOwnerReader.findOwnerId(PRODUCT)).thenReturn(Optional.of(ownerId));
+    org.mockito.Mockito.lenient()
+        .when(productOwnerReader.findOwnerId(PRODUCT))
+        .thenReturn(Optional.of(ownerId));
+    org.mockito.Mockito.lenient()
+        .when(productOwnerReader.lockOwnerId(PRODUCT))
+        .thenReturn(Optional.of(ownerId));
+    org.mockito.Mockito.lenient()
+        .when(documentRepository.findProductIdById(5L))
+        .thenReturn(Optional.of(PRODUCT));
   }
 
   @Test
@@ -172,12 +234,10 @@ class DocumentServiceTest {
   void 현재_소유자는_만료형_URL을_받는다() {
     when(documentRepository.findById(5L)).thenReturn(Optional.of(document(OTHER)));
     ownerIs(OWNER);
-    when(fileStorage.createTemporaryUrl(eq("documents/100/k.pdf"), any(Instant.class)))
-        .thenReturn("/local-files?x");
 
     FileUrlResponse response = service.createFileUrl(5L, OWNER);
 
-    assertEquals("/local-files?x", response.url());
+    assertTrue(response.url().startsWith("/api/v1/documents/5/file?version=1&expires="));
     assertEquals(NOW.plus(DocumentService.FILE_URL_TTL), response.expiresAt());
   }
 
@@ -238,7 +298,6 @@ class DocumentServiceTest {
 
   @Test
   void 이전_소유자는_삭제할_수_없다() throws IOException {
-    when(documentRepository.findById(5L)).thenReturn(Optional.of(document(OTHER)));
     ownerIs(OWNER);
 
     assertEquals(ErrorCode.RESOURCE_NOT_FOUND, errorOf(() -> service.delete(5L, OTHER)));
@@ -297,7 +356,6 @@ class DocumentServiceTest {
 
   @Test
   void 소유자가_아니면_교체할_수_없다() throws IOException {
-    when(documentRepository.findByIdForUpdate(5L)).thenReturn(Optional.of(document(OWNER)));
     ownerIs(OWNER);
 
     assertEquals(ErrorCode.RESOURCE_NOT_FOUND, errorOf(() -> replace(OTHER, true)));

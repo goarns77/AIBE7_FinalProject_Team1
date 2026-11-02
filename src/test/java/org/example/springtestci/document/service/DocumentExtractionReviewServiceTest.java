@@ -54,6 +54,10 @@ class DocumentExtractionReviewServiceTest {
   void setUp() {
     lenient().when(writerProvider.getIfAvailable()).thenReturn(writer);
     lenient().when(productOwnerReader.findOwnerId(PRODUCT)).thenReturn(Optional.of(OWNER));
+    lenient().when(documentRepository.findProductIdById(DOCUMENT)).thenReturn(Optional.of(PRODUCT));
+    lenient()
+        .when(productOwnerReader.lockOwnerId(PRODUCT))
+        .thenAnswer(invocation -> productOwnerReader.findOwnerId(PRODUCT));
     service =
         new DocumentExtractionReviewService(
             documentRepository,
@@ -158,7 +162,6 @@ class DocumentExtractionReviewServiceTest {
 
   @Test
   void nonOwnerSeesNotFound() {
-    when(documentRepository.findByIdForUpdate(DOCUMENT)).thenReturn(Optional.of(document()));
 
     assertEquals(
         ErrorCode.RESOURCE_NOT_FOUND,

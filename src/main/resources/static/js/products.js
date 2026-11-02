@@ -3,7 +3,7 @@
   const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
   const registration = window.PastportProductRegistration;
   const state = {
-    products: [], current: null, selectedId: null, loading: null, imageUrls: [], registerImageUrls: [], documentToken: 0,
+    products: [], page: 0, pageInfo: null, current: null, selectedId: null, loading: null, imageUrls: [], registerImageUrls: [], documentToken: 0,
     productListRequests: registration.createLatestRequestGate(),
   };
 
@@ -46,10 +46,12 @@
   const loadProducts = async (force = false) => {
     if (state.loading && !force) return state.loading;
     const requestVersion = state.productListRequests.begin();
-    const request = api(API)
-      .then((products) => {
+    const request = api(`${API}?page=${state.page}&size=20`)
+      .then(async (result) => {
         if (!state.productListRequests.isCurrent(requestVersion)) return false;
-        state.products = products || [];
+        state.products = result?.items || [];
+        state.pageInfo = result?.page;
+        if (!state.products.length && state.page > 0) { state.page--; state.loading = null; return loadProducts(true); }
         return true;
       })
       .catch((error) => {
@@ -65,6 +67,7 @@
     state.productListRequests.invalidate();
     state.loading = null;
     state.products = [];
+    state.page = 0; state.pageInfo = null;
   };
 
   const productChip = (product) => {
@@ -87,10 +90,19 @@
     const query = root.querySelector('[data-product-search]')?.value.trim().toLocaleLowerCase('ko-KR') || '';
     const filtered = state.products.filter((product) => [product.title, product.manufacturer, product.modelName]
       .some((value) => String(value || '').toLocaleLowerCase('ko-KR').includes(query)));
-    root.querySelector('[data-product-count]').textContent = state.products.length;
+    root.querySelector('[data-product-count]').textContent = state.pageInfo?.totalElements || 0;
     root.querySelector('[data-purchased-count]').textContent = state.products.filter((product) => product.purchaseDate).length;
     root.querySelector('[data-product-latest]').textContent = state.products[0] ? dateTime(state.products[0].createdAt) : '–';
     list.replaceChildren();
+    root.querySelector('[data-product-paging]')?.remove();
+    const paging = document.createElement('div'); paging.dataset.productPaging = '';
+    [-1, 1].forEach(step => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'button';
+      button.textContent = step < 0 ? '이전 제품' : '다음 제품';
+      button.disabled = step < 0 ? state.page === 0 : !state.pageInfo?.hasNext;
+      button.addEventListener('click', async () => { state.page += step; await openHome(true); }); paging.append(button);
+    });
+    const info = document.createElement('span'); info.textContent = ` ${state.page + 1}쪽 · 전체 ${state.pageInfo?.totalElements || 0}개 · 검색은 현재 페이지 기준`; paging.append(info); list.after(paging);
     if (!filtered.length) {
       status.hidden = false;
       status.innerHTML = state.products.length

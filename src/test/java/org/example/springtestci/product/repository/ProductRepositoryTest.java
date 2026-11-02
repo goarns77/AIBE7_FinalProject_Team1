@@ -48,6 +48,25 @@ class ProductRepositoryTest {
   }
 
   @Test
+  void pagesUseSqlLimitsStableOrderAndExcludeOtherOwnersAndArchivedProducts() {
+    for (int index = 0; index < 21; index++) insert(71L, "APPLE", "pagination-" + index);
+    long archived = insert(71L, "APPLE", "pagination-archived");
+    repository.archive(archived);
+    insert(72L, "APPLE", "pagination-other");
+    assertEquals(21, repository.countOwned(71L));
+    var first = repository.findOwnedPage(71L, 0, 20);
+    var last = repository.findOwnedPage(71L, 1, 20);
+    assertEquals(20, first.size());
+    assertEquals(1, last.size());
+    assertTrue(first.stream().noneMatch(item -> item.productId() == last.get(0).productId()));
+    assertTrue(repository.findOwnedPage(71L, 2, 20).isEmpty());
+    assertTrue(
+        repository
+            .findImagesForProducts(first.stream().map(ProductResponse::productId).toList())
+            .isEmpty());
+  }
+
+  @Test
   void ownedProductIncludesHistoryCountAndMostRecentRecord() {
     long productId = insert(21L, "APPLE", "fp-history-summary");
     jdbc.update(
